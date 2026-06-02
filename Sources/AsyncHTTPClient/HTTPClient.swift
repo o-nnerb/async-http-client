@@ -847,6 +847,21 @@ public final class HTTPClient: Sendable {
         /// ``HTTPClient`` will still request certificates from the server for `example.com` and validate them as if we would connect to `example.com`.
         public var dnsOverride: [String: String] = [:]
 
+        /// Controls which DNS resolver is used for hostname resolution.
+        ///
+        /// By default, the system resolver (`getaddrinfo`) is used, which returns addresses
+        /// in the order produced by the platform's `getaddrinfo` (typically following
+        /// RFC 6724 destination-address selection). Set to ``DNSResolver/randomized`` to
+        /// shuffle addresses for DNS-based load balancing with services that have multiple
+        /// A/AAAA records (e.g. Kubernetes headless services).
+        ///
+        /// - Note: This setting has no effect when connections run on an `NIOTSEventLoopGroup`,
+        ///   which is the default on Apple platforms (macOS 10.14+, iOS/tvOS 12+, watchOS 6+).
+        ///   Network.framework performs its own DNS resolution and does not expose a resolver hook.
+        ///   To use the randomized resolver there, pass a `MultiThreadedEventLoopGroup` via
+        ///   ``HTTPClient/EventLoopGroupProvider/shared(_:)``.
+        public var dnsResolver: DNSResolver = .system
+
         /// Enables following 3xx redirects automatically.
         ///
         /// Following redirects are supported:
@@ -1416,6 +1431,30 @@ extension HTTPClient.Configuration {
             self.idleTimeout = idleTimeout
             self.concurrentHTTP1ConnectionsPerHostSoftLimit = concurrentHTTP1ConnectionsPerHostSoftLimit
         }
+    }
+
+    /// Controls which DNS resolver is used for hostname resolution.
+    public struct DNSResolver: Sendable, Hashable {
+        enum Backing: Sendable, Hashable {
+            case system
+            case randomized
+        }
+
+        let backing: Backing
+
+        private init(backing: Backing) {
+            self.backing = backing
+        }
+
+        /// Use the system's default DNS resolver (`getaddrinfo`).
+        /// Addresses are returned in the order produced by the platform's `getaddrinfo`,
+        /// typically following RFC 6724 destination-address selection.
+        public static let system: Self = .init(backing: .system)
+
+        /// Use a randomized DNS resolver that shuffles the addresses
+        /// returned by `getaddrinfo`. This enables DNS-based load balancing
+        /// for services with multiple A/AAAA records (e.g. Kubernetes headless services).
+        public static let randomized: Self = .init(backing: .randomized)
     }
 
     public struct HTTPVersion: Sendable, Hashable {
