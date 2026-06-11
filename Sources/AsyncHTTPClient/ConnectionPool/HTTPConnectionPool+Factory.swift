@@ -504,6 +504,12 @@ extension HTTPConnectionPool.ConnectionFactory {
                 nioBootstrap
                 .connectTimeout(deadline - NIODeadline.now())
                 .enableMPTCP(clientConfiguration.enableMultipath)
+            switch clientConfiguration.dnsResolver.backing {
+            case .system:
+                break
+            case .randomized:
+                bootstrap = bootstrap.resolver(NIORandomizedDNSResolver(loop: eventLoop))
+            }
             if let localAddress = self.key.localAddress {
                 do {
                     let socketAddress = try SocketAddress(ipAddress: localAddress, port: 0)
@@ -656,6 +662,12 @@ extension HTTPConnectionPool.ConnectionFactory {
             var bootstrap = ClientBootstrap(group: eventLoop)
                 .connectTimeout(deadline - NIODeadline.now())
                 .enableMPTCP(clientConfiguration.enableMultipath)
+            switch clientConfiguration.dnsResolver.backing {
+            case .system:
+                break
+            case .randomized:
+                bootstrap = bootstrap.resolver(NIORandomizedDNSResolver(loop: eventLoop))
+            }
             if let localAddress = key.localAddress {
                 do {
                     let socketAddress = try SocketAddress(ipAddress: localAddress, port: 0)
