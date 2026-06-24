@@ -2,7 +2,7 @@
 //
 // This source file is part of the AsyncHTTPClient open source project
 //
-// Copyright (c) 2021 Apple Inc. and the AsyncHTTPClient project authors
+// Copyright (c) 2026 Apple Inc. and the AsyncHTTPClient project authors
 // Licensed under Apache License v2.0
 //
 // See LICENSE.txt for license information
@@ -103,7 +103,7 @@ public struct SPKIHash: Sendable, Hashable {
 /// are rejected early using public knowledge (algorithm-determined digest size),
 /// which cannot leak secret information.
 internal func constantTimeAnyMatch(_ target: Data, _ candidates: [SPKIHash]) -> Bool {
-    guard !candidates.isEmpty else { return false }
+    if candidates.isEmpty { return false }
 
     let expectedLength = candidates[0].bytes.count
     guard target.count == expectedLength else { return false }
@@ -175,7 +175,7 @@ public struct SPKIPinningConfiguration: Sendable, Hashable {
 ///
 /// - Warning: Never use `.audit` in production — it effectively disables pinning security
 ///   guarantees while maintaining audit visibility.
-public struct SPKIPinningPolicy: Sendable, Hashable {
+public struct SPKIPinningPolicy: Sendable, Hashable, CustomStringConvertible {
 
     private enum RawValue: Sendable, Hashable {
         case audit
@@ -204,14 +204,6 @@ public struct SPKIPinningPolicy: Sendable, Hashable {
     private init(rawValue: RawValue) {
         self.rawValue = rawValue
     }
-
-    public static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.rawValue == rhs.rawValue
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(rawValue)
-    }
 }
 
 /// ChannelHandler that validates server certificates using SPKI pinning.
@@ -232,16 +224,6 @@ final class SPKIPinningHandler: ChannelInboundHandler, RemovableChannelHandler {
     ) {
         self.tlsPinning = tlsPinning
         self.logger = logger
-
-        if tlsPinning.pins.count < 2 && tlsPinning.policy == .strict {
-            logger.warning(
-                "SPKIPinningHandler deployed with < 2 pins in strict mode — catastrophic lockout risk on certificate rotation!",
-                metadata: [
-                    "current_pin_count": .stringConvertible(tlsPinning.pins.count),
-                    "recommendation": .string("Deploy multiple pins to enable safe certificate rotation"),
-                ]
-            )
-        }
     }
 
     func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
