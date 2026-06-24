@@ -445,7 +445,7 @@ extension HTTPConnectionPool.ConnectionFactory {
         }
 
         guard #available(macOS 10.15, iOS 13, tvOS 13, watchOS 6, *) else {
-            throw SPKIPinningHandlerError.emptyCertificateChain
+            throw SPKIPinningHandlerError.platformNotSupported
         }
 
         if tlsPinning.pins.count < 2 && tlsPinning.policy == .strict {
@@ -498,7 +498,7 @@ extension HTTPConnectionPool.ConnectionFactory {
                             NWWaitingHandler(requester: requester, connectionID: connectionID)
                         )
                         if tlsPinning != nil {
-                            throw SPKIPinningHandlerError.networkFrameworkUnavailable
+                            throw SPKIPinningHandlerError.networkFrameworkNotSupported
                         }
                         return channel.eventLoop.makeSucceededVoidFuture()
                     } catch {
@@ -649,7 +649,7 @@ extension HTTPConnectionPool.ConnectionFactory {
                             )
 
                             if tlsPinning != nil {
-                                throw SPKIPinningHandlerError.networkFrameworkUnavailable
+                                throw SPKIPinningHandlerError.networkFrameworkNotSupported
                             }
                             // we don't need to set a TLS deadline for NIOTS connections, since the
                             // TLS handshake is part of the TS connection bootstrap. If the TLS
