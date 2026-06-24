@@ -126,8 +126,19 @@ internal func constantTimeAnyMatch(_ target: Data, _ candidates: [SPKIHash]) -> 
 
 /// Configuration for SPKI pinning validation.
 ///
+/// Use this type to declare which SPKI hashes should be considered trusted
+/// and how validation failures should be handled.
+///
 /// - Warning: Always deploy multiple pins to enable safe certificate rotation.
 ///   Single-pin configurations in `.strict` mode risk catastrophic lockout.
+///
+/// - Note: SPKI pinning is only supported when the client uses the NIOSSL
+///   backend. When `Network.framework` is configured as the TLS backend,
+///   providing a non-nil configuration will cause the request to fail at
+///   runtime.
+///
+/// - Note: SPKI pinning requires Apple platforms with a minimum deployment
+///   target of macOS 10.15, iOS 13, tvOS 13, or watchOS 6.
 public struct SPKIPinningConfiguration: Sendable, Hashable {
 
     /// SPKI hashes of trusted certificates.
@@ -144,6 +155,11 @@ public struct SPKIPinningConfiguration: Sendable, Hashable {
     ///   - pins: Hashes of trusted certificates. For production safety, include
     ///           pins for both current and upcoming certificates to enable rotation.
     ///   - policy: Validation failure policy (`.strict` for production, `.audit` for debugging).
+    ///
+    /// - Important: This configuration requires the NIOSSL backend and is only
+    ///   supported on Apple platforms (macOS 10.15+, iOS 13+, tvOS 13+, watchOS 6+).
+    ///   Using it with `Network.framework` or on unsupported platforms will cause
+    ///   the request to fail at runtime.
     public init(
         pins: [SPKIHash],
         policy: SPKIPinningPolicy = .strict
