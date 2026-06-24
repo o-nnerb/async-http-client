@@ -336,7 +336,7 @@ enum PinningValidationResult {
     case auditWarning(Error)
 }
 
-enum SPKIPinningHandlerError: Error, CustomStringConvertible {
+enum SPKIPinningHandlerError: Error, Equatable, CustomStringConvertible {
     case emptyCertificateChain
     case pinMismatch
     case extractionFailed(String)
