@@ -414,19 +414,7 @@ extension HTTPConnectionPool.ConnectionFactory {
                     )
                     try channel.pipeline.syncOperations.addHandler(sslHandler)
 
-                    if let tlsPinning {
-                        if #available(macOS 10.15, iOS 13, tvOS 13, watchOS 6, *) {
-                            let pinningHandler = SPKIPinningHandler(
-                                tlsPinning: tlsPinning,
-                                logger: logger
-                            )
-                            try channel.pipeline.syncOperations.addHandler(pinningHandler)
-                        } else {
-                            fatalError(
-                                "SPKI pinning requires minimum OS version 10.15/13.0. Cannot proceed with pinning disabled."
-                            )
-                        }
-                    }
+                    try setupSPKIPinningHandlerIfNeeded(channel.pipeline.syncOperations, logger: logger)
 
                     let tlsEventHandler = TLSEventsHandler(deadline: deadline)
                     try channel.pipeline.syncOperations.addHandler(tlsEventHandler)
@@ -449,6 +437,33 @@ extension HTTPConnectionPool.ConnectionFactory {
                 }
             }
         }
+    }
+
+    private func setupSPKIPinningHandlerIfNeeded(_ sync: ChannelPipeline.SynchronousOperations, logger: Logger) throws {
+        guard let tlsPinning else {
+            return
+        }
+
+        guard #available(macOS 10.15, iOS 13, tvOS 13, watchOS 6, *) else {
+            throw SPKIPinningHandlerError.emptyCertificateChain
+        }
+
+        if tlsPinning.pins.count < 2 && tlsPinning.policy == .strict {
+            logger.warning(
+                "SPKIPinningHandler deployed with < 2 pins in strict mode — catastrophic lockout risk on certificate rotation!",
+                metadata: [
+                    "current_pin_count": .stringConvertible(tlsPinning.pins.count),
+                    "recommendation": .string("Deploy multiple pins to enable safe certificate rotation"),
+                ]
+            )
+        }
+
+        let pinningHandler = SPKIPinningHandler(
+            tlsPinning: tlsPinning,
+            logger: logger
+        )
+
+        try sync.addHandler(pinningHandler)
     }
 
     private func makePlainBootstrap<Requester: HTTPConnectionRequester>(
@@ -482,6 +497,9 @@ extension HTTPConnectionPool.ConnectionFactory {
                         try channel.pipeline.syncOperations.addHandler(
                             NWWaitingHandler(requester: requester, connectionID: connectionID)
                         )
+                        if tlsPinning != nil {
+                            throw SPKIPinningHandlerError.networkFrameworkUnavailable
+                        }
                         return channel.eventLoop.makeSucceededVoidFuture()
                     } catch {
                         return channel.eventLoop.makeFailedFuture(error)
@@ -629,6 +647,10 @@ extension HTTPConnectionPool.ConnectionFactory {
                             try channel.pipeline.syncOperations.addHandler(
                                 NWWaitingHandler(requester: requester, connectionID: connectionID)
                             )
+
+                            if tlsPinning != nil {
+                                throw SPKIPinningHandlerError.networkFrameworkUnavailable
+                            }
                             // we don't need to set a TLS deadline for NIOTS connections, since the
                             // TLS handshake is part of the TS connection bootstrap. If the TLS
                             // handshake times out the complete connection creation will be failed.
@@ -690,19 +712,7 @@ extension HTTPConnectionPool.ConnectionFactory {
 
                             try sync.addHandler(sslHandler)
 
-                            if let tlsPinning {
-                                if #available(macOS 10.15, iOS 13, tvOS 13, watchOS 6, *) {
-                                    let pinningHandler = SPKIPinningHandler(
-                                        tlsPinning: tlsPinning,
-                                        logger: logger
-                                    )
-                                    try sync.addHandler(pinningHandler)
-                                } else {
-                                    fatalError(
-                                        "SPKI pinning requires minimum OS version 10.15/13.0. Cannot proceed with pinning disabled."
-                                    )
-                                }
-                            }
+                            try setupSPKIPinningHandlerIfNeeded(sync, logger: logger)
 
                             try sync.addHandler(tlsEventHandler)
 

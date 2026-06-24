@@ -325,6 +325,7 @@ enum SPKIPinningHandlerError: Error, CustomStringConvertible {
     case pinMismatch
     case extractionFailed(String)
     case handlerNotFound(String)
+    case networkFrameworkUnavailable
 
     var description: String {
         switch self {
@@ -336,6 +337,8 @@ enum SPKIPinningHandlerError: Error, CustomStringConvertible {
             return "SPKI extraction failed: \(error)"
         case .handlerNotFound(let error):
             return "SSL handler not found: \(error)"
+        case .networkFrameworkUnavailable:
+            return "SPKI Pinning not available for Network.framework"
         }
     }
 }
