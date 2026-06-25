@@ -31,7 +31,7 @@ final class SPKIHashTests: XCTestCase {
     func testInitWithSHA384AndWrongLengthThrows() throws {
         let base64 = Data(repeating: 0, count: 32).base64EncodedString()
         XCTAssertThrowsError(try SPKIHash(algorithm: SHA384.self, base64: base64)) { error in
-            XCTAssertEqual(error as? HTTPClientError, .invalidDigestLength)
+            XCTAssertEqual(error as? HTTPClientError, .invalidDigest)
         }
     }
 
@@ -52,7 +52,7 @@ final class SPKIHashTests: XCTestCase {
     func testInitWithWrongByteCountThrows() throws {
         let bytes = Data(repeating: 0, count: 31)
         XCTAssertThrowsError(try SPKIHash(algorithm: SHA256.self, bytes: bytes)) { error in
-            XCTAssertEqual(error as? HTTPClientError, .invalidDigestLength)
+            XCTAssertEqual(error as? HTTPClientError, .invalidDigest)
         }
     }
 

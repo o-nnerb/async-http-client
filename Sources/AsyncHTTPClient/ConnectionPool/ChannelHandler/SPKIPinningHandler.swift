@@ -48,11 +48,11 @@ public struct SPKIHash: Sendable, Hashable {
     ///   - algorithm: Hash algorithm used to generate the digest.
     ///   - base64: Base64-encoded hash digest.
     ///
-    /// - Throws: `HTTPClientError.invalidDigestLength` if length doesn't match algorithm.
+    /// - Throws: `HTTPClientError.invalidDigest` if length doesn't match algorithm.
     @available(macOS 10.15, iOS 13, tvOS 13, watchOS 6, *)
     public init<Algorithm: HashFunction>(algorithm: Algorithm.Type, base64: String) throws {
         guard let data = Data(base64Encoded: base64) else {
-            throw HTTPClientError.invalidDigestLength
+            throw HTTPClientError.invalidDigest
         }
         try self.init(algorithm: algorithm, bytes: data)
     }
@@ -63,11 +63,11 @@ public struct SPKIHash: Sendable, Hashable {
     ///   - algorithm: Hash algorithm that generated the digest bytes.
     ///   - bytes: Raw digest bytes.
     ///
-    /// - Throws: `HTTPClientError.invalidDigestLength` if byte count doesn't match algorithm.
+    /// - Throws: `HTTPClientError.invalidDigest` if byte count doesn't match algorithm.
     @available(macOS 10.15, iOS 13, tvOS 13, watchOS 6, *)
     public init<Algorithm: HashFunction>(algorithm: Algorithm.Type, bytes: Data) throws {
         guard bytes.count == Algorithm.Digest.byteCount else {
-            throw HTTPClientError.invalidDigestLength
+            throw HTTPClientError.invalidDigest
         }
         self.bytes = bytes
         self.algorithm = Algorithm.hash(data:)
@@ -138,7 +138,9 @@ internal func constantTimeAnyMatch(_ target: Data, _ candidates: [SPKIHash]) -> 
 ///   runtime.
 ///
 /// - Note: SPKI pinning requires Apple platforms with a minimum deployment
-///   target of macOS 10.15, iOS 13, tvOS 13, or watchOS 6.
+///   target of macOS 10.15, iOS 13, tvOS 13, or watchOS 6. Attempting to use
+///   SPKI pinning on unsupported platforms will cause the request to fail at
+///   runtime with a `SPKIPinningHandlerError.platformNotSupported` error.
 public struct SPKIPinningConfiguration: Sendable, Hashable {
 
     /// SPKI hashes of trusted certificates.
