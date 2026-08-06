@@ -13,6 +13,7 @@
 //===----------------------------------------------------------------------===//
 
 import Logging
+import NIOConcurrencyHelpers
 import NIOCore
 import NIOHTTP1
 import NIOHTTPCompression
@@ -33,6 +34,10 @@ extension HTTPConnectionPool {
         let tlsPinning: SPKIPinningConfiguration?
         let tlsConfiguration: TLSConfiguration
         let sslContextCache: SSLContextCache
+
+        /// Guards against logging the weak-pinning warning once per physical connection —
+        /// shared across every connection created by this factory so it fires at most once per pool.
+        private let hasWarnedAboutWeakPinning = NIOLockedValueBox(false)
 
         init(
             key: ConnectionPool.Key,
@@ -450,13 +455,21 @@ extension HTTPConnectionPool.ConnectionFactory {
         }
 
         if tlsPinning.pins.count < 2 && tlsPinning.policy == .strict {
-            logger.warning(
-                "SPKIPinningHandler deployed with < 2 pins in strict mode — catastrophic lockout risk on certificate rotation!",
-                metadata: [
-                    "current_pin_count": .stringConvertible(tlsPinning.pins.count),
-                    "recommendation": .string("Deploy multiple pins to enable safe certificate rotation"),
-                ]
-            )
+            let shouldWarn = self.hasWarnedAboutWeakPinning.withLockedValue { hasWarned in
+                let shouldWarn = !hasWarned
+                hasWarned = true
+                return shouldWarn
+            }
+
+            if shouldWarn {
+                logger.warning(
+                    "SPKIPinningHandler deployed with < 2 pins in strict mode — catastrophic lockout risk on certificate rotation!",
+                    metadata: [
+                        "current_pin_count": .stringConvertible(tlsPinning.pins.count),
+                        "recommendation": .string("Deploy multiple pins to enable safe certificate rotation"),
+                    ]
+                )
+            }
         }
 
         let pinningHandler = SPKIPinningHandler(
@@ -498,9 +511,6 @@ extension HTTPConnectionPool.ConnectionFactory {
                         try channel.pipeline.syncOperations.addHandler(
                             NWWaitingHandler(requester: requester, connectionID: connectionID)
                         )
-                        if tlsPinning != nil {
-                            throw SPKIPinningHandlerError.networkFrameworkNotSupported
-                        }
                         return channel.eventLoop.makeSucceededVoidFuture()
                     } catch {
                         return channel.eventLoop.makeFailedFuture(error)

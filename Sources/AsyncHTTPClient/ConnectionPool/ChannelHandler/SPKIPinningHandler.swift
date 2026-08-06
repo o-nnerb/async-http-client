@@ -132,9 +132,15 @@ internal func constantTimeAnyMatch(_ target: Data, _ candidates: [SPKIHash]) -> 
 /// - Warning: Always deploy multiple pins to enable safe certificate rotation.
 ///   Single-pin configurations in `.strict` mode risk catastrophic lockout.
 ///
-/// - Note: SPKI pinning is only supported when the client uses the NIOSSL
-///   backend. When `Network.framework` is configured as the TLS backend,
-///   providing a non-nil configuration will cause the request to fail at
+/// - Note: SPKI pinning requires the target's TLS handshake to be performed by
+///   NIOSSL. This is true for direct HTTPS connections that use the NIOSSL
+///   backend, and for HTTPS connections tunneled through an HTTP or SOCKS
+///   proxy — proxied connections always negotiate TLS with the origin via
+///   NIOSSL, regardless of which transport carries the plaintext tunnel to
+///   the proxy itself. It is **not** supported for direct (non-proxied) HTTPS
+///   connections where `Network.framework` performs the TLS handshake
+///   itself, which is the default on Apple platforms. Providing a non-nil
+///   configuration for such a connection will cause the request to fail at
 ///   runtime.
 ///
 /// - Note: SPKI pinning requires Apple platforms with a minimum deployment
@@ -158,10 +164,14 @@ public struct SPKIPinningConfiguration: Sendable, Hashable {
     ///           pins for both current and upcoming certificates to enable rotation.
     ///   - policy: Validation failure policy (`.strict` for production, `.audit` for debugging).
     ///
-    /// - Important: This configuration requires the NIOSSL backend and is only
-    ///   supported on Apple platforms (macOS 10.15+, iOS 13+, tvOS 13+, watchOS 6+).
-    ///   Using it with `Network.framework` or on unsupported platforms will cause
-    ///   the request to fail at runtime.
+    /// - Important: This configuration requires the target's TLS handshake to be
+    ///   performed by NIOSSL — true for direct HTTPS connections using the NIOSSL
+    ///   backend and for any HTTPS connection tunneled through an HTTP or SOCKS
+    ///   proxy. It is not supported for direct (non-proxied) HTTPS connections
+    ///   where `Network.framework` performs the TLS handshake itself (the default
+    ///   on Apple platforms), nor on platforms below macOS 10.15, iOS 13, tvOS 13,
+    ///   or watchOS 6. Using it in either unsupported case will cause the request
+    ///   to fail at runtime.
     public init(
         pins: [SPKIHash],
         policy: SPKIPinningPolicy = .strict

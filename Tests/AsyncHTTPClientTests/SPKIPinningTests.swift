@@ -13,6 +13,7 @@
 //===----------------------------------------------------------------------===//
 
 import Crypto
+import InMemoryLogging
 import Logging
 import NIOCore
 import NIOEmbedded
@@ -357,7 +358,6 @@ class SPKIPinningTests: XCTestCase {
         var config = HTTPClient.Configuration().enableFastFailureModeForTesting()
         config.tlsConfiguration = TLSConfiguration.makeClientConfiguration()
         config.tlsConfiguration?.trustRoots = .certificates([certificate])
-        // Network.framework não suporta .noHostnameVerification, então removemos essa linha
 
         config.tlsPinning = SPKIPinningConfiguration(
             pins: [try SPKIHash(algorithm: SHA256.self, base64: pinBase64)],
@@ -385,6 +385,91 @@ class SPKIPinningTests: XCTestCase {
         }
     }
     #endif
+
+    // MARK: - Weak Pinning Warning
+
+    /// Regression test: the weak-pinning warning used to be logged once per physical
+    /// connection created by the pool, which spammed logs under connection churn. It must now
+    /// be logged at most once per connection pool, regardless of how many connections it opens.
+    func testSPKIPinning_WeakConfigWarning_LogsOnlyOncePerPool() async throws {
+        let bin = HTTPBin(.http1_1(tlsConfiguration: TestTLS.serverConfiguration))
+        defer { XCTAssertNoThrow(try bin.shutdown()) }
+
+        let publicKey = try TestTLS.certificate.extractPublicKey()
+        let spkiBytes = try publicKey.toSPKIBytes()
+        let spkiHash = SHA256.hash(data: Data(spkiBytes))
+        let pinBase64 = Data(spkiHash).base64EncodedString()
+
+        var config = HTTPClient.Configuration().enableFastFailureModeForTesting()
+        config.tlsConfiguration = TLSConfiguration.makeClientConfiguration()
+        config.tlsConfiguration?.trustRoots = .certificates([TestTLS.certificate])
+        config.tlsConfiguration?.certificateVerification = .noHostnameVerification
+        // A single pin in `.strict` mode is what triggers the weak-pinning warning.
+        config.tlsPinning = SPKIPinningConfiguration(
+            pins: [try SPKIHash(algorithm: SHA256.self, base64: pinBase64)],
+            policy: .strict
+        )
+
+        let (logStore, backgroundLogger) = InMemoryLogHandler.makeLogger(logLevel: .trace)
+
+        let localClient = HTTPClient(
+            eventLoopGroupProvider: .shared(MultiThreadedEventLoopGroup.singleton),
+            configuration: config,
+            backgroundActivityLogger: backgroundLogger
+        )
+        defer { XCTAssertNoThrow(try localClient.syncShutdown()) }
+
+        // Two concurrent requests force the pool to open two separate physical connections,
+        // each of which used to log the weak-pinning warning independently.
+        async let first = localClient.execute(
+            HTTPClientRequest(url: "https://localhost:\(bin.port)/get"),
+            deadline: .now() + .seconds(10)
+        )
+        async let second = localClient.execute(
+            HTTPClientRequest(url: "https://localhost:\(bin.port)/get"),
+            deadline: .now() + .seconds(10)
+        )
+        _ = try await (first, second)
+
+        let warnings = logStore.entries.filter { "\($0.message)".contains("catastrophic lockout") }
+        XCTAssertEqual(warnings.count, 1, "Expected exactly one warning, got \(warnings.count): \(warnings)")
+    }
+
+    // MARK: - End-to-End Tests: HTTP Proxy
+
+    func testSPKIPinning_HTTPProxy_ValidPin_AllowsConnection() throws {
+        try runSPKIPinningProxyTest(useValidPin: true, policy: .strict)
+    }
+
+    func testSPKIPinning_HTTPProxy_InvalidPin_RejectsConnection() throws {
+        try runSPKIPinningProxyTest(useValidPin: false, policy: .strict)
+    }
+
+    func testSPKIPinning_HTTPProxy_ValidPin_AuditMode_AllowsConnection() throws {
+        try runSPKIPinningProxyTest(useValidPin: true, policy: .audit)
+    }
+
+    func testSPKIPinning_HTTPProxy_InvalidPin_AuditMode_AllowsConnection() throws {
+        try runSPKIPinningProxyTest(useValidPin: false, policy: .audit)
+    }
+
+    // MARK: - End-to-End Tests: SOCKS Proxy
+
+    func testSPKIPinning_SOCKSProxy_ValidPin_AllowsConnection() throws {
+        try runSPKIPinningSOCKSProxyTest(useValidPin: true, policy: .strict)
+    }
+
+    func testSPKIPinning_SOCKSProxy_InvalidPin_RejectsConnection() throws {
+        try runSPKIPinningSOCKSProxyTest(useValidPin: false, policy: .strict)
+    }
+
+    func testSPKIPinning_SOCKSProxy_ValidPin_AuditMode_AllowsConnection() throws {
+        try runSPKIPinningSOCKSProxyTest(useValidPin: true, policy: .audit)
+    }
+
+    func testSPKIPinning_SOCKSProxy_InvalidPin_AuditMode_AllowsConnection() throws {
+        try runSPKIPinningSOCKSProxyTest(useValidPin: false, policy: .audit)
+    }
 
     // MARK: - Helpers
 
@@ -473,6 +558,157 @@ class SPKIPinningTests: XCTestCase {
                 )
             } catch {
                 XCTFail("Expecting HTTPClientError, received: \(type(of: error))", file: file, line: line)
+            }
+        }
+    }
+
+    /// Exercises SPKI pinning for an HTTPS target reached through an HTTP proxy (`CONNECT` tunnel).
+    ///
+    /// The actual TLS handshake to the origin in this path is always performed by NIOSSL — even
+    /// when the surrounding plain-text connection to the proxy itself is bootstrapped via
+    /// Network.framework (the default transport on Apple platforms) — so pinning must succeed here
+    /// exactly as it does for a direct, non-proxied HTTPS connection.
+    private func runSPKIPinningProxyTest(
+        useValidPin: Bool,
+        policy: SPKIPinningPolicy,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws {
+        let bin = HTTPBin(.http1_1(ssl: true), proxy: .simulate(authorization: nil))
+        defer { XCTAssertNoThrow(try bin.shutdown()) }
+
+        let pinBase64: String
+        if useValidPin {
+            let publicKey = try TestTLS.certificate.extractPublicKey()
+            let spkiBytes = try publicKey.toSPKIBytes()
+            let spkiHash = SHA256.hash(data: Data(spkiBytes))
+            pinBase64 = Data(spkiHash).base64EncodedString()
+        } else {
+            let spkiHash = SHA256.hash(data: Data(UUID().uuidString.utf8))
+            pinBase64 = Data(spkiHash).base64EncodedString()
+        }
+
+        var config = HTTPClient.Configuration(
+            proxy: .server(host: "localhost", port: bin.port)
+        ).enableFastFailureModeForTesting()
+        config.tlsConfiguration = TLSConfiguration.makeClientConfiguration()
+        config.tlsConfiguration?.trustRoots = .certificates([TestTLS.certificate])
+        config.tlsConfiguration?.certificateVerification = .noHostnameVerification
+
+        config.tlsPinning = SPKIPinningConfiguration(
+            pins: [try SPKIHash(algorithm: SHA256.self, base64: pinBase64)],
+            policy: policy
+        )
+
+        // Uses the platform default event loop group (NIOTS on Apple platforms) to exercise the
+        // exact transport that previously caused proxied SPKI-pinned requests to fail spuriously.
+        let eventLoopGroup = getDefaultEventLoopGroup(numberOfThreads: 1)
+        defer { XCTAssertNoThrow(try eventLoopGroup.syncShutdownGracefully()) }
+
+        let localClient = HTTPClient(
+            eventLoopGroupProvider: .shared(eventLoopGroup),
+            configuration: config
+        )
+        defer { XCTAssertNoThrow(try localClient.syncShutdown()) }
+
+        if useValidPin || policy == .audit {
+            var response: HTTPClient.Response?
+            XCTAssertNoThrow(
+                response = try localClient.get(url: "https://test/ok").wait(),
+                file: file,
+                line: line
+            )
+            XCTAssertEqual(response?.status, .ok, file: file, line: line)
+        } else {
+            XCTAssertThrowsError(try localClient.get(url: "https://test/ok").wait(), file: file, line: line) {
+                error in
+                guard let clientError = error as? HTTPClientError else {
+                    XCTFail("Unexpected error: \(error)", file: file, line: line)
+                    return
+                }
+                XCTAssertTrue(
+                    clientError.description.contains("pinning") || clientError.description.contains("SPKI"),
+                    "Unexpected error: \(clientError.description)",
+                    file: file,
+                    line: line
+                )
+            }
+        }
+    }
+
+    /// Exercises SPKI pinning for an HTTPS target reached through a SOCKS proxy.
+    ///
+    /// Just like the HTTP `CONNECT` path, the TLS handshake to the origin here is always
+    /// performed by NIOSSL regardless of which transport carries the plain-text tunnel to the
+    /// SOCKS proxy, so pinning must succeed exactly as it does without a proxy.
+    private func runSPKIPinningSOCKSProxyTest(
+        useValidPin: Bool,
+        policy: SPKIPinningPolicy,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws {
+        let socksBin = try MockSOCKSServer(
+            expectedURL: "/ok",
+            expectedResponse: "it works!",
+            tlsConfiguration: TestTLS.serverConfiguration
+        )
+        defer { XCTAssertNoThrow(try socksBin.shutdown()) }
+
+        let pinBase64: String
+        if useValidPin {
+            let publicKey = try TestTLS.certificate.extractPublicKey()
+            let spkiBytes = try publicKey.toSPKIBytes()
+            let spkiHash = SHA256.hash(data: Data(spkiBytes))
+            pinBase64 = Data(spkiHash).base64EncodedString()
+        } else {
+            let spkiHash = SHA256.hash(data: Data(UUID().uuidString.utf8))
+            pinBase64 = Data(spkiHash).base64EncodedString()
+        }
+
+        var config = HTTPClient.Configuration(
+            proxy: .socksServer(host: "localhost", port: socksBin.port)
+        ).enableFastFailureModeForTesting()
+        config.tlsConfiguration = TLSConfiguration.makeClientConfiguration()
+        config.tlsConfiguration?.trustRoots = .certificates([TestTLS.certificate])
+        config.tlsConfiguration?.certificateVerification = .noHostnameVerification
+
+        config.tlsPinning = SPKIPinningConfiguration(
+            pins: [try SPKIHash(algorithm: SHA256.self, base64: pinBase64)],
+            policy: policy
+        )
+
+        // Uses the platform default event loop group (NIOTS on Apple platforms) to exercise the
+        // exact transport that previously caused proxied SPKI-pinned requests to fail spuriously.
+        let eventLoopGroup = getDefaultEventLoopGroup(numberOfThreads: 1)
+        defer { XCTAssertNoThrow(try eventLoopGroup.syncShutdownGracefully()) }
+
+        let localClient = HTTPClient(
+            eventLoopGroupProvider: .shared(eventLoopGroup),
+            configuration: config
+        )
+        defer { XCTAssertNoThrow(try localClient.syncShutdown()) }
+
+        if useValidPin || policy == .audit {
+            var response: HTTPClient.Response?
+            XCTAssertNoThrow(
+                response = try localClient.get(url: "https://test/ok").wait(),
+                file: file,
+                line: line
+            )
+            XCTAssertEqual(response?.status, .ok, file: file, line: line)
+        } else {
+            XCTAssertThrowsError(try localClient.get(url: "https://test/ok").wait(), file: file, line: line) {
+                error in
+                guard let clientError = error as? HTTPClientError else {
+                    XCTFail("Unexpected error: \(error)", file: file, line: line)
+                    return
+                }
+                XCTAssertTrue(
+                    clientError.description.contains("pinning") || clientError.description.contains("SPKI"),
+                    "Unexpected error: \(clientError.description)",
+                    file: file,
+                    line: line
+                )
             }
         }
     }
